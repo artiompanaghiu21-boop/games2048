@@ -1,40 +1,57 @@
-// Запуск: node server.js  (нужен Node 18+). Секрет клиента хранится ТОЛЬКО здесь, в .env
+// Запуск: node server.js  (Node 18+). client_secret хранится только в переменных окружения сервера.
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
-const { CLIENT_ID, CLIENT_SECRET, PORT = 3000, PUBLIC_URL } = process.env;
+const { CLIENT_ID, CLIENT_SECRET, PORT = 3000 } = process.env;
+if (!CLIENT_ID || !CLIENT_SECRET) { console.error('Задайте CLIENT_ID и CLIENT_SECRET'); process.exit(1); }
+
 const API = 'https://huevo.su/api/apps/v1';
 const AUTH = 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
-const COST = 100;
+const COST = 100;                 // цена возрождения в монэтках
+const MAX_AGE = 24 * 3600;        // свежесть подписи запуска, с
 
-// intent_id -> 'pending' | 'paid' | 'declined' | 'used'. Для продакшена храните в БД.
-const intents = new Map();
+const sessions = new Map();       // token -> { userId, test, exp }
+const intents = new Map();        // intent_id -> { userId, used, busy }  (в продакшене — в БД)
 
-async function huevo(p, body) {
+// --- Проверка подписанных параметров запуска hu_* (docs: «Авторизация пользователя») ---
+function verifyLaunch(query) {
+  const params = Object.fromEntries(new URLSearchParams(query));
+  const data = Object.keys(params).filter(k => k.startsWith('hu_') && k !== 'hu_hash')
+    .sort().map(k => `${k}=${params[k]}`).join('\n');
+  const key = crypto.createHash('sha256').update(CLIENT_SECRET).digest(); // бинарный дайджест
+  const expected = crypto.createHmac('sha256', key).update(data).digest('hex');
+  const given = params.hu_hash || '';
+  if (!given) { console.log('login: в адресе нет hu_hash. Найдены параметры:', Object.keys(params).join(',') || 'никаких'); return null; }
+  if (given.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given))) {
+    console.log('login: подпись не совпала. Длина CLIENT_SECRET на сервере =', CLIENT_SECRET.length, '(лишний пробел или кавычки меняют длину)');
+    return null;
+  }
+  const age = Date.now() / 1000 - Number(params.hu_ts);
+  if (!(age >= 0 && age <= MAX_AGE)) { console.log('login: подпись устарела, возраст, с:', Math.round(age)); return null; }
+  return params;
+}
+
+// --- Вызов huEVO Apps API ---
+async function huevo(method, p, body) {
   const r = await fetch(API + p, {
-    method: 'POST',
+    method,
     headers: { Authorization: AUTH, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: body ? JSON.stringify(body) : undefined,
   });
-  if (r.status === 429) throw new Error('Лимит запросов, повтор через ' + r.headers.get('retry-after') + ' с');
+  if (r.status === 429) throw new Error('rate_limited, Retry-After=' + r.headers.get('retry-after'));
   const j = await r.json();
-  if (!j.ok) throw new Error((j.error && j.error.message) || 'Ошибка huevo');
+  if (!j.ok) throw new Error((j.error && j.error.code) || 'huevo_error');
   return j;
 }
 
-// Подпись: HMAC-SHA256 тела, ключ = sha256(client_secret). Формат ключа в скриншоте не уточнён,
-// поэтому проверяем оба варианта (hex-строка и сырые байты).
-function validSignature(raw, header) {
-  if (!header) return false;
-  const given = String(header).replace(/^sha256=/i, '').toLowerCase();
-  const h = crypto.createHash('sha256').update(CLIENT_SECRET);
-  const keyBytes = h.copy().digest(), keyHex = h.digest('hex');
-  return [keyBytes, keyHex].some(k => {
-    const calc = crypto.createHmac('sha256', k).update(raw).digest('hex');
-    return calc.length === given.length && crypto.timingSafeEqual(Buffer.from(calc), Buffer.from(given));
-  });
-}
-
 const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
-const readBody = req => new Promise(ok => { const c = []; req.on('data', d => c.push(d)); req.on('end', () => ok(Buffer.concat(c))); });
+const readJson = req => new Promise(ok => {
+  const c = []; req.on('data', d => c.push(d));
+  req.on('end', () => { try { ok(JSON.parse(Buffer.concat(c).toString() || '{}')) } catch { ok({}) } });
+});
+function session(req) {
+  const t = (req.headers.authorization || '').replace(/^Bearer /, '');
+  const s = sessions.get(t);
+  return s && s.exp > Date.now() ? s : null;
+}
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -44,39 +61,52 @@ http.createServer(async (req, res) => {
       return res.end(fs.readFileSync(path.join(__dirname, 'public', 'index.html')));
     }
 
-    // 1. Игрок нажал «Возродиться» -> создаём платёж
+    // 1. Вход: проверяем подпись, выдаём свой токен сеанса
+    if (req.method === 'POST' && url.pathname === '/api/login') {
+      const { query } = await readJson(req);
+      const p = verifyLaunch(String(query || ''));
+      if (!p) return send(res, 401, { ok: false });
+      const token = crypto.randomBytes(24).toString('hex');
+      sessions.set(token, { userId: Number(p.hu_user_id), test: p.hu_mode === 'test', exp: Date.now() + MAX_AGE * 1000 });
+      return send(res, 200, { ok: true, token });
+    }
+
+    const s = session(req);
+    if (!s) return send(res, 401, { ok: false });
+
+    // 2. Создаём намерение оплаты (POST /payments)
     if (req.method === 'POST' && url.pathname === '/api/revive/start') {
-      // TODO: путь и поля уточните в документации huevo (раздел «Кошелёк» / платежи)
-      const j = await huevo('/payments/intents', {
+      const p = await huevo('POST', '/payments', {
+        user_id: s.userId,
         amount: COST,
-        description: 'Возрождение в 2048',
-        callback_url: PUBLIC_URL + '/huevo/callback',
+        description: 'Возрождение в игре 2048',
+        idempotency_key: 'rv_' + crypto.randomUUID(),
+        test: s.test,
       });
-      intents.set(j.intent_id, 'pending');
-      return send(res, 200, { ok: true, intent_id: j.intent_id, pay_url: j.pay_url });
+      intents.set(p.intent_id, { userId: s.userId, used: false, busy: false });
+      return send(res, 200, { ok: true, intent_id: p.intent_id });
     }
 
-    // 2. Callback от huevo после решения игрока
-    if (req.method === 'POST' && url.pathname === '/huevo/callback') {
-      const raw = await readBody(req);
-      if (!validSignature(raw, req.headers['x-huevo-signature'])) return send(res, 401, { ok: false });
-      const d = JSON.parse(raw.toString());
-      // TODO: названия полей (intent_id, status) сверьте с документацией
-      const id = d.intent_id;
-      if (intents.get(id) === 'pending') intents.set(id, d.status === 'paid' ? 'paid' : 'declined');
-      return send(res, 200, { ok: true }); // повторы безопасны: пересчитываем по intent_id
-    }
-
-    // 3. Браузер опрашивает статус; «paid» отдаётся один раз
+    // 3. Статус: источник истины — GET /payments/{intent_id}. Возрождение выдаётся один раз.
     if (req.method === 'GET' && url.pathname === '/api/revive/status') {
       const id = url.searchParams.get('intent_id');
-      const st = intents.get(id) || 'unknown';
-      if (st === 'paid') intents.set(id, 'used');
-      return send(res, 200, { ok: true, status: st });
+      const it = intents.get(id);
+      if (!it || it.userId !== s.userId) return send(res, 404, { ok: false });
+      if (it.used) return send(res, 200, { ok: true, status: 'used' });
+      if (it.busy) return send(res, 200, { ok: true, status: 'pending' });
+      it.busy = true;
+      try {
+        const p = await huevo('GET', '/payments/' + encodeURIComponent(id));
+        if (p.status === 'succeeded' && p.amount === COST && p.user_id === it.userId) {
+          it.used = true;
+          return send(res, 200, { ok: true, status: 'succeeded', granted: true });
+        }
+        return send(res, 200, { ok: true, status: p.status, error: p.error });
+      } finally { it.busy = false; }
     }
     send(res, 404, { ok: false });
   } catch (e) {
     console.error(e.message);
-    send(res, 500, { ok: false, error: 'server_error' });
+    send(res, 500, { ok: false });
   }
 }).listen(PORT, () => console.log('http://localhost:' + PORT));
