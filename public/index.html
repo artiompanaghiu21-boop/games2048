@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>2048</title>
+<style>
+:root{
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  --bg:#e8eef0;--board:#b9c7cc;--cell:#d3dde0;--text:#1d2b30;--muted:#5a6d74;--btn:#1f5f6b;--btnt:#fff;
+  --t2:#ffe66d;--t4:#ffc145;--t8:#ff9f1c;--t16:#ff6b4a;--t32:#f72585;--t64:#c1189b;
+  --t128:#7b2cbf;--t256:#4361ee;--t512:#1ea5d4;--t1024:#06b886;--t2048:#f5a800;--tmax:#222;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){--bg:#14201f;--board:#27393a;--cell:#334849;--text:#e8f0ee;--muted:#9bb0ad;--btn:#4fb0a6;--btnt:#0f1a1a;}
+}
+:root[data-theme="dark"]{--bg:#14201f;--board:#27393a;--cell:#334849;--text:#e8f0ee;--muted:#9bb0ad;--btn:#4fb0a6;--btnt:#0f1a1a;}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font-family:"Trebuchet MS",Verdana,sans-serif;display:flex;justify-content:center;align-items:center;touch-action:none}
+.wrap{width:min(92vw,420px)}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+h1{font-size:44px;margin:0;letter-spacing:-1px}
+.scores{display:flex;gap:8px}
+.score{background:var(--board);border-radius:8px;padding:6px 12px;text-align:center;min-width:56px}
+.score small{display:block;font-size:11px;color:var(--muted)}
+.score b{font-size:18px}
+.bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:14px;color:var(--muted)}
+button{background:var(--btn);color:var(--btnt);border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:bold;cursor:pointer}
+button:focus-visible{outline:3px solid var(--text);outline-offset:2px}
+#revive{background:#f5a800;color:#1d2b30}#revive[disabled]{opacity:.5;cursor:default}#err{font-size:14px;font-weight:normal;color:#b3261e;min-height:18px}
+#board{position:relative;background:var(--board);border-radius:12px;padding:10px;display:grid;grid-template-columns:repeat(4,1fr);gap:10px;aspect-ratio:1}
+.cell{background:var(--cell);border-radius:8px}
+.tile{position:absolute;z-index:1;box-shadow:0 3px 8px rgba(0,0,0,.22),inset 0 -3px 0 rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center;border-radius:8px;font-weight:bold;color:var(--text);
+  transition:left .12s,top .12s;font-size:clamp(20px,7vw,34px)}
+.tile.new{animation:pop .15s}
+.tile.merged{animation:pop .15s}
+@keyframes pop{from{transform:scale(.6)}to{transform:scale(1)}}
+.tile.big{color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.35)}
+#msg{position:absolute;inset:0;z-index:20;border-radius:12px;background:rgba(232,238,240,.85);display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;font-size:28px;font-weight:bold;color:#1d2b30}
+#msg.show{display:flex}
+@media (prefers-reduced-motion:reduce){.tile,.tile.new,.tile.merged{transition:none;animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>2048</h1>
+    <div class="scores">
+      <div class="score"><small>Счёт</small><b id="score">0</b></div>
+      <div class="score"><small>Рекорд</small><b id="best">0</b></div>
+    </div>
+  </header>
+  <div class="bar"><span>Стрелки или свайп. Объединяйте одинаковые плитки.</span><button id="restart">Заново</button></div>
+  <div id="board"><div id="msg"><span id="msgText"></span><button id="revive">Возродиться за 100 монет</button><span id="err"></span><button id="again">Играть снова</button></div></div>
+</div>
+<script>
+const N=4;
+let grid,score,best=0,over=false,won=false,keepGoing=false;
+const boardEl=document.getElementById('board');
+const scoreEl=document.getElementById('score'),bestEl=document.getElementById('best');
+const msg=document.getElementById('msg'),msgText=document.getElementById('msgText');
+try{best=+localStorage.getItem('best2048')||0}catch(e){}
+
+for(let i=0;i<N*N;i++){const c=document.createElement('div');c.className='cell';boardEl.appendChild(c)}
+
+function colorFor(v){
+  const m={2:'--t2',4:'--t4',8:'--t8',16:'--t16',32:'--t32',64:'--t64',128:'--t128',256:'--t256',512:'--t512',1024:'--t1024',2048:'--t2048'};
+  return 'var('+(m[v]||'--tmax')+')';
+}
+function init(){
+  grid=Array.from({length:N},()=>Array(N).fill(0));
+  score=0;over=false;won=false;keepGoing=false;
+  msg.classList.remove('show');
+  addTile();addTile();render();
+}
+function addTile(){
+  const e=[];
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++)if(!grid[r][c])e.push([r,c]);
+  if(!e.length)return;
+  const [r,c]=e[Math.floor(Math.random()*e.length)];
+  grid[r][c]=Math.random()<.9?2:4;
+  newPos=r+','+c;
+}
+let newPos='',mergedPos=new Set();
+function render(){
+  boardEl.querySelectorAll('.tile').forEach(t=>t.remove());
+  const pad=10,gap=10,size=(boardEl.clientWidth-pad*2-gap*3)/4;
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    const v=grid[r][c];if(!v)continue;
+    const t=document.createElement('div');
+    t.className='tile'+(v>=8?' big':'');
+    if(newPos===r+','+c)t.classList.add('new');
+    else if(mergedPos.has(r+','+c))t.classList.add('merged');
+    t.style.cssText=`width:${size}px;height:${size}px;left:${pad+c*(size+gap)}px;top:${pad+r*(size+gap)}px;background:${colorFor(v)};`+(v>=1024?'font-size:clamp(16px,5.5vw,26px)':'');
+    t.textContent=v;
+    boardEl.appendChild(t);
+  }
+  newPos='';mergedPos=new Set();
+  scoreEl.textContent=score;
+  if(score>best){best=score;try{localStorage.setItem('best2048',best)}catch(e){}}
+  bestEl.textContent=best;
+}
+function slideLine(line){
+  const a=line.filter(x=>x),merged=[];let gained=0;
+  for(let i=0;i<a.length-1;i++){
+    if(a[i]===a[i+1]){a[i]*=2;gained+=a[i];a.splice(i+1,1);merged.push(i)}
+  }
+  while(a.length<N)a.push(0);
+  return {line:a,gained,merged};
+}
+function move(dir){ // 0 влево,1 вверх,2 вправо,3 вниз
+  if(over)return;
+  let moved=false;
+  for(let i=0;i<N;i++){
+    let line=[];
+    for(let j=0;j<N;j++){
+      const [r,c]=pos(dir,i,j);line.push(grid[r][c]);
+    }
+    const res=slideLine(line);
+    for(let j=0;j<N;j++){
+      const [r,c]=pos(dir,i,j);
+      if(grid[r][c]!==res.line[j])moved=true;
+      grid[r][c]=res.line[j];
+    }
+    res.merged.forEach(j=>{const [r,c]=pos(dir,i,j);mergedPos.add(r+','+c)});
+    score+=res.gained;
+  }
+  if(!moved)return;
+  addTile();render();check();
+}
+function pos(dir,i,j){
+  switch(dir){
+    case 0:return [i,j];
+    case 2:return [i,N-1-j];
+    case 1:return [j,i];
+    default:return [N-1-j,i];
+  }
+}
+function canMove(){
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    if(!grid[r][c])return true;
+    if(c<N-1&&grid[r][c]===grid[r][c+1])return true;
+    if(r<N-1&&grid[r][c]===grid[r+1][c])return true;
+  }
+  return false;
+}
+function check(){
+  if(!keepGoing&&grid.flat().includes(2048)){
+    won=true;keepGoing=true;
+    msgText.textContent='Вы выиграли!';reviveBtn.style.display='none';err.textContent='';msg.classList.add('show');
+  }else if(!canMove()){
+    over=true;showOver();
+  }
+}
+document.addEventListener('keydown',e=>{
+  const k={ArrowLeft:0,ArrowUp:1,ArrowRight:2,ArrowDown:3,a:0,w:1,d:2,s:3,ф:0,ц:1,в:2,ы:3}[e.key];
+  if(k!==undefined){e.preventDefault();move(k)}
+});
+let sx,sy;
+boardEl.addEventListener('touchstart',e=>{sx=e.touches[0].clientX;sy=e.touches[0].clientY},{passive:true});
+boardEl.addEventListener('touchend',e=>{
+  const dx=e.changedTouches[0].clientX-sx,dy=e.changedTouches[0].clientY-sy;
+  if(Math.max(Math.abs(dx),Math.abs(dy))<24)return;
+  if(Math.abs(dx)>Math.abs(dy))move(dx>0?2:0);else move(dy>0?3:1);
+},{passive:true});
+document.getElementById('restart').onclick=init;
+document.getElementById('again').onclick=()=>{
+  if(won&&!over){msg.classList.remove('show')}else init();
+};
+/* ===== Оплата возрождения через huevo (проверка делает сервер) ===== */
+const reviveBtn=document.getElementById('revive'),err=document.getElementById('err');
+function showOver(){
+  msgText.textContent='Игра окончена';
+  reviveBtn.style.display='';reviveBtn.disabled=false;err.textContent='';
+  msg.classList.add('show');
+}
+async function api(url,opt){const r=await fetch(url,opt);return r.json()}
+function applyRevive(){
+  const t=[];
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++)if(grid[r][c])t.push([grid[r][c],r,c]);
+  t.sort((a,b)=>a[0]-b[0]).slice(0,4).forEach(([v,r,c])=>{grid[r][c]=0});
+  over=false;msg.classList.remove('show');render();
+}
+reviveBtn.onclick=async()=>{
+  err.textContent='';reviveBtn.disabled=true;
+  const win=window.open('about:blank','_blank');
+  try{
+    const s=await api('/api/revive/start',{method:'POST'});
+    if(!s.ok)throw new Error(s.error);
+    if(win)win.location.href=s.pay_url;else{err.textContent='Разрешите всплывающие окна и повторите';reviveBtn.disabled=false;return}
+    err.textContent='Ожидаем оплату…';
+    for(let i=0;i<90;i++){
+      await new Promise(r=>setTimeout(r,2000));
+      const st=await api('/api/revive/status?intent_id='+encodeURIComponent(s.intent_id));
+      if(st.status==='paid'){applyRevive();return}
+      if(st.status==='declined'){err.textContent='Оплата отклонена';reviveBtn.disabled=false;return}
+    }
+    err.textContent='Время ожидания вышло';
+  }catch(e){err.textContent='Ошибка оплаты, попробуйте ещё раз'}
+  reviveBtn.disabled=false;
+};
+window.addEventListener('resize',render);
+init();
+</script>
+</body>
+</html>
