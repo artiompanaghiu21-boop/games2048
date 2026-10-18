@@ -35,9 +35,10 @@ button:focus-visible{outline:3px solid var(--text);outline-offset:2px}
 .tile{position:absolute;z-index:1;box-shadow:0 3px 8px rgba(0,0,0,.22),inset 0 -3px 0 rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center;border-radius:8px;font-weight:bold;color:var(--text);
   transition:left .12s,top .12s;font-size:clamp(20px,7vw,34px)}
 .tile.new{animation:pop .15s}
-.tile.merged{animation:pop .15s}
+.tile.merged{animation:bump .2s}@keyframes bump{50%{transform:scale(1.22)}}
 @keyframes pop{from{transform:scale(.6)}to{transform:scale(1)}}
 .tile.big{color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.35)}
+#lbPanel{position:absolute;inset:0;z-index:30;border-radius:12px;background:var(--bg);display:none;flex-direction:column;padding:14px;gap:10px;overflow:auto;color:var(--text)}#lbPanel.show{display:flex}#lbPanel h2{margin:0;font-size:22px}#lbList{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px;font-size:15px}#lbList li{display:flex;justify-content:space-between;gap:10px;background:var(--board);border-radius:8px;padding:6px 10px}#lbList li.me{outline:2px solid var(--btn)}.sm{padding:6px 10px;font-size:13px}
 #msg{position:absolute;inset:0;z-index:20;border-radius:12px;background:rgba(232,238,240,.85);display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;font-size:28px;font-weight:bold;color:#1d2b30}
 #msg.show{display:flex}
 @media (prefers-reduced-motion:reduce){.tile,.tile.new,.tile.merged{transition:none;animation:none}}
@@ -52,8 +53,8 @@ button:focus-visible{outline:3px solid var(--text);outline-offset:2px}
       <div class="score"><small>Рекорд</small><b id="best">0</b></div>
     </div>
   </header>
-  <div class="bar"><span>Стрелки или свайп. Объединяйте одинаковые плитки.</span><button id="restart">Заново</button></div>
-  <div id="board"><div id="msg"><span id="msgText"></span><button id="revive">Возродиться за 100 монэток</button><span id="err"></span><button id="again">Играть снова</button></div></div>
+  <div class="bar"><span>Стрелки или свайп</span><span><button id="lb" class="sm">Лидеры</button> <button id="restart">Заново</button></span></div>
+  <div id="board"><div id="lbPanel"><h2>Лидеры</h2><ol id="lbList"></ol><button id="lbClose">Закрыть</button></div><div id="msg"><span id="msgText"></span><button id="revive">Возродиться за 100 монэток</button><span id="err"></span><button id="again">Играть снова</button></div></div>
 </div>
 <script src="https://huevo.su/static/js/huevo-apps-v1.js"></script>
 <script>
@@ -70,8 +71,16 @@ function colorFor(v){
   const m={2:'--t2',4:'--t4',8:'--t8',16:'--t16',32:'--t32',64:'--t64',128:'--t128',256:'--t256',512:'--t512',1024:'--t1024',2048:'--t2048'};
   return 'var('+(m[v]||'--tmax')+')';
 }
+let nextId=1;const els=new Map();
+function geo(){const z=(boardEl.clientWidth-30)/4;return {z,x:c=>10+c*(z+10),y:r=>10+r*(z+10)}}
+function styleEl(el,v,z){
+  el.textContent=v;el.className='tile'+(v>=8?' big':'');
+  el.style.background=colorFor(v);el.style.fontSize=v>=1024?'clamp(16px,5.5vw,26px)':'';
+  el.style.width=el.style.height=z+'px';
+}
 function init(){
-  grid=Array.from({length:N},()=>Array(N).fill(0));
+  grid=Array.from({length:N},()=>Array(N).fill(null));
+  els.forEach(e=>e.remove());els.clear();
   score=0;over=false;won=false;keepGoing=false;
   msg.classList.remove('show');
   addTile();addTile();render();
@@ -81,54 +90,67 @@ function addTile(){
   for(let r=0;r<N;r++)for(let c=0;c<N;c++)if(!grid[r][c])e.push([r,c]);
   if(!e.length)return;
   const [r,c]=e[Math.floor(Math.random()*e.length)];
-  grid[r][c]=Math.random()<.9?2:4;
-  newPos=r+','+c;
+  grid[r][c]={id:nextId++,v:Math.random()<.9?2:4,fresh:true};
 }
-let newPos='',mergedPos=new Set();
 function render(){
-  boardEl.querySelectorAll('.tile').forEach(t=>t.remove());
-  const pad=10,gap=10,size=(boardEl.clientWidth-pad*2-gap*3)/4;
+  const g=geo();
   for(let r=0;r<N;r++)for(let c=0;c<N;c++){
-    const v=grid[r][c];if(!v)continue;
-    const t=document.createElement('div');
-    t.className='tile'+(v>=8?' big':'');
-    if(newPos===r+','+c)t.classList.add('new');
-    else if(mergedPos.has(r+','+c))t.classList.add('merged');
-    t.style.cssText=`width:${size}px;height:${size}px;left:${pad+c*(size+gap)}px;top:${pad+r*(size+gap)}px;background:${colorFor(v)};`+(v>=1024?'font-size:clamp(16px,5.5vw,26px)':'');
-    t.textContent=v;
-    boardEl.appendChild(t);
+    const t=grid[r][c];if(!t)continue;
+    let el=els.get(t.id);
+    if(!el){
+      el=document.createElement('div');els.set(t.id,el);boardEl.appendChild(el);
+      styleEl(el,t.v,g.z);
+      el.style.left=g.x(c)+'px';el.style.top=g.y(r)+'px';
+      if(t.fresh){el.classList.add('new');t.fresh=false}
+    }
+    el.style.width=el.style.height=g.z+'px';
+    el.style.left=g.x(c)+'px';el.style.top=g.y(r)+'px';
   }
-  newPos='';mergedPos=new Set();
   scoreEl.textContent=score;
   if(score>best){best=score;try{localStorage.setItem('best2048',best)}catch(e){}}
   bestEl.textContent=best;
 }
 function slideLine(line){
-  const a=line.filter(x=>x),merged=[];let gained=0;
-  for(let i=0;i<a.length-1;i++){
-    if(a[i]===a[i+1]){a[i]*=2;gained+=a[i];a.splice(i+1,1);merged.push(i)}
+  const a=line.filter(Boolean),out=[];let gained=0;
+  for(let i=0;i<a.length;i++){
+    if(a[i+1]&&a[i].v===a[i+1].v){
+      const v=a[i].v*2;gained+=v;
+      out.push({id:a[i].id,v,merged:true,absorb:a[i+1].id});i++;
+    }else out.push(a[i]);
   }
-  while(a.length<N)a.push(0);
-  return {line:a,gained,merged};
+  while(out.length<N)out.push(null);
+  return {line:out,gained};
 }
 function move(dir){ // 0 влево,1 вверх,2 вправо,3 вниз
   if(over)return;
-  let moved=false;
+  let moved=false,gained=0;const gone=[];
   for(let i=0;i<N;i++){
-    let line=[];
+    const line=[];
+    for(let j=0;j<N;j++){const [r,c]=pos(dir,i,j);line.push(grid[r][c])}
+    const res=slideLine(line);gained+=res.gained;
     for(let j=0;j<N;j++){
-      const [r,c]=pos(dir,i,j);line.push(grid[r][c]);
+      const [r,c]=pos(dir,i,j),t=res.line[j];
+      if(grid[r][c]!==t)moved=true;
+      grid[r][c]=t;
+      if(t&&t.absorb){gone.push({id:t.absorb,r,c});t.absorb=0}
     }
-    const res=slideLine(line);
-    for(let j=0;j<N;j++){
-      const [r,c]=pos(dir,i,j);
-      if(grid[r][c]!==res.line[j])moved=true;
-      grid[r][c]=res.line[j];
-    }
-    res.merged.forEach(j=>{const [r,c]=pos(dir,i,j);mergedPos.add(r+','+c)});
-    score+=res.gained;
   }
   if(!moved)return;
+  score+=gained;
+  const g=geo();
+  // поглощённая плитка скользит на место слияния и исчезает
+  gone.forEach(({id,r,c})=>{
+    const el=els.get(id);els.delete(id);if(!el)return;
+    el.style.zIndex=0;el.style.left=g.x(c)+'px';el.style.top=g.y(r)+'px';
+    setTimeout(()=>el.remove(),130);
+  });
+  // слитая плитка меняет значение в конце скольжения и «подпрыгивает»
+  grid.flat().forEach(t=>{
+    if(t&&t.merged){
+      t.merged=false;
+      setTimeout(()=>{const el=els.get(t.id);if(el){styleEl(el,t.v,geo().z);el.classList.add('merged')}},120);
+    }
+  });
   addTile();render();check();
 }
 function pos(dir,i,j){
@@ -141,14 +163,14 @@ function pos(dir,i,j){
 }
 function canMove(){
   for(let r=0;r<N;r++)for(let c=0;c<N;c++){
-    if(!grid[r][c])return true;
-    if(c<N-1&&grid[r][c]===grid[r][c+1])return true;
-    if(r<N-1&&grid[r][c]===grid[r+1][c])return true;
+    const t=grid[r][c];if(!t)return true;
+    if(c<N-1&&grid[r][c+1]&&t.v===grid[r][c+1].v)return true;
+    if(r<N-1&&grid[r+1][c]&&t.v===grid[r+1][c].v)return true;
   }
   return false;
 }
 function check(){
-  if(!keepGoing&&grid.flat().includes(2048)){
+  if(!keepGoing&&grid.flat().some(t=>t&&t.v===2048)){
     won=true;keepGoing=true;
     msgText.textContent='Вы выиграли!';reviveBtn.style.display='none';err.textContent='';msg.classList.add('show');
   }else if(!canMove()){
@@ -166,7 +188,7 @@ boardEl.addEventListener('touchend',e=>{
   if(Math.max(Math.abs(dx),Math.abs(dy))<24)return;
   if(Math.abs(dx)>Math.abs(dy))move(dx>0?2:0);else move(dy>0?3:1);
 },{passive:true});
-document.getElementById('restart').onclick=init;
+document.getElementById('restart').onclick=()=>{submitScore();init()};
 document.getElementById('again').onclick=()=>{
   if(won&&!over){msg.classList.remove('show')}else init();
 };
@@ -187,7 +209,30 @@ async function api(url,opt={}){
     else loginErr='Сервер отклонил вход: проверьте CLIENT_SECRET и CLIENT_ID на Render';
   }catch(e){loginErr='Сервер игры не ответил, попробуйте через минуту'}
 })();
+function submitScore(){
+  if(token&&score>0)api('/api/score',{method:'POST',body:JSON.stringify({score})}).catch(()=>{});
+}
+const lbPanel=document.getElementById('lbPanel'),lbList=document.getElementById('lbList');
+async function loadLb(){
+  lbList.textContent='Загрузка…';
+  try{
+    const j=await api('/api/leaderboard');
+    lbList.textContent='';
+    if(!j.top.length){lbList.textContent='Пока никого нет. Будьте первым!';return}
+    const add=(txt,val,me)=>{
+      const li=document.createElement('li');if(me)li.className='me';
+      const a=document.createElement('span');a.textContent=txt;
+      const b=document.createElement('b');b.textContent=val;
+      li.append(a,b);lbList.appendChild(li);
+    };
+    j.top.forEach((e,i)=>add((i+1)+'. '+e.name,e.score,e.me));
+    if(j.mine&&j.mine.rank>j.top.length)add('Вы: '+j.mine.rank+' место',j.mine.score,true);
+  }catch(e){lbList.textContent='Не удалось загрузить таблицу'}
+}
+document.getElementById('lb').onclick=()=>{lbPanel.classList.add('show');loadLb()};
+document.getElementById('lbClose').onclick=()=>lbPanel.classList.remove('show');
 function showOver(){
+  submitScore();
   msgText.textContent='Игра окончена';
   reviveBtn.style.display='';reviveBtn.disabled=false;err.textContent='';
   msg.classList.add('show');
@@ -195,7 +240,9 @@ function showOver(){
 function applyRevive(){
   const t=[];
   for(let r=0;r<N;r++)for(let c=0;c<N;c++)if(grid[r][c])t.push([grid[r][c],r,c]);
-  t.sort((a,b)=>a[0]-b[0]).slice(0,4).forEach(([v,r,c])=>{grid[r][c]=0});
+  t.sort((x,y)=>x[0].v-y[0].v).slice(0,4).forEach(([tile,r,c])=>{
+    grid[r][c]=null;const el=els.get(tile.id);if(el)el.remove();els.delete(tile.id);
+  });
   over=false;msg.classList.remove('show');render();
 }
 reviveBtn.onclick=async()=>{
