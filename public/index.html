@@ -53,8 +53,9 @@ button:focus-visible{outline:3px solid var(--text);outline-offset:2px}
     </div>
   </header>
   <div class="bar"><span>Стрелки или свайп. Объединяйте одинаковые плитки.</span><button id="restart">Заново</button></div>
-  <div id="board"><div id="msg"><span id="msgText"></span><button id="revive">Возродиться за 100 монет</button><span id="err"></span><button id="again">Играть снова</button></div></div>
+  <div id="board"><div id="msg"><span id="msgText"></span><button id="revive">Возродиться за 100 монэток</button><span id="err"></span><button id="again">Играть снова</button></div></div>
 </div>
+<script src="https://huevo.su/static/js/huevo-apps-v1.js"></script>
 <script>
 const N=4;
 let grid,score,best=0,over=false,won=false,keepGoing=false;
@@ -169,14 +170,26 @@ document.getElementById('restart').onclick=init;
 document.getElementById('again').onclick=()=>{
   if(won&&!over){msg.classList.remove('show')}else init();
 };
-/* ===== Оплата возрождения через huevo (проверка делает сервер) ===== */
+/* ===== Оплата возрождения через huEVO (проверка делает сервер) ===== */
 const reviveBtn=document.getElementById('revive'),err=document.getElementById('err');
+let token=null;
+async function api(url,opt={}){
+  opt.headers={'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})};
+  const r=await fetch(url,opt);return r.json();
+}
+// Вход: сервер проверяет подпись hu_* из адреса фрейма
+(async()=>{
+  try{
+    await huevo.init();
+    const j=await api('/api/login',{method:'POST',body:JSON.stringify({query:location.search})});
+    if(j.ok)token=j.token;
+  }catch(e){/* игра открыта вне huEVO: играть можно, платить нельзя */}
+})();
 function showOver(){
   msgText.textContent='Игра окончена';
   reviveBtn.style.display='';reviveBtn.disabled=false;err.textContent='';
   msg.classList.add('show');
 }
-async function api(url,opt){const r=await fetch(url,opt);return r.json()}
 function applyRevive(){
   const t=[];
   for(let r=0;r<N;r++)for(let c=0;c<N;c++)if(grid[r][c])t.push([grid[r][c],r,c]);
@@ -184,20 +197,22 @@ function applyRevive(){
   over=false;msg.classList.remove('show');render();
 }
 reviveBtn.onclick=async()=>{
-  err.textContent='';reviveBtn.disabled=true;
-  const win=window.open('about:blank','_blank');
+  err.textContent='';
+  if(!token){err.textContent='Оплата доступна только внутри huEVO';return}
+  reviveBtn.disabled=true;
   try{
     const s=await api('/api/revive/start',{method:'POST'});
-    if(!s.ok)throw new Error(s.error);
-    if(win)win.location.href=s.pay_url;else{err.textContent='Разрешите всплывающие окна и повторите';reviveBtn.disabled=false;return}
-    err.textContent='Ожидаем оплату…';
-    for(let i=0;i<90;i++){
+    if(!s.ok)throw new Error('start');
+    huevo.confirmPayment(s.intent_id).catch(()=>{}); // итог всё равно узнаём на сервере
+    err.textContent='Подтвердите оплату в окне huEVO';
+    for(let i=0;i<180;i++){
       await new Promise(r=>setTimeout(r,2000));
       const st=await api('/api/revive/status?intent_id='+encodeURIComponent(s.intent_id));
-      if(st.status==='paid'){applyRevive();return}
-      if(st.status==='declined'){err.textContent='Оплата отклонена';reviveBtn.disabled=false;return}
+      if(st.status==='succeeded'&&st.granted){applyRevive();return}
+      if(st.status==='cancelled'||st.status==='expired'){err.textContent='Оплата отменена';break}
+      if(st.status==='failed'){err.textContent=st.error==='insufficient_funds'?'Не хватает монэток':'Оплата не прошла';break}
+      if(st.status==='used'||st.ok===false)break;
     }
-    err.textContent='Время ожидания вышло';
   }catch(e){err.textContent='Ошибка оплаты, попробуйте ещё раз'}
   reviveBtn.disabled=false;
 };
