@@ -172,18 +172,20 @@ document.getElementById('again').onclick=()=>{
 };
 /* ===== Оплата возрождения через huEVO (проверка делает сервер) ===== */
 const reviveBtn=document.getElementById('revive'),err=document.getElementById('err');
-let token=null;
+let token=null,loginErr='';
 async function api(url,opt={}){
   opt.headers={'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})};
   const r=await fetch(url,opt);return r.json();
 }
 // Вход: сервер проверяет подпись hu_* из адреса фрейма
 (async()=>{
+  try{await huevo.init()}
+  catch(e){loginErr=(e&&e.code==='not_embedded')||typeof huevo==='undefined'?'Оплата доступна только внутри huEVO':'Не удалось связаться с huEVO ('+((e&&e.code)||e)+')';return}
   try{
-    await huevo.init();
     const j=await api('/api/login',{method:'POST',body:JSON.stringify({query:location.search})});
     if(j.ok)token=j.token;
-  }catch(e){/* игра открыта вне huEVO: играть можно, платить нельзя */}
+    else loginErr='Сервер отклонил вход: проверьте CLIENT_SECRET и CLIENT_ID на Render';
+  }catch(e){loginErr='Сервер игры не ответил, попробуйте через минуту'}
 })();
 function showOver(){
   msgText.textContent='Игра окончена';
@@ -198,7 +200,7 @@ function applyRevive(){
 }
 reviveBtn.onclick=async()=>{
   err.textContent='';
-  if(!token){err.textContent='Оплата доступна только внутри huEVO';return}
+  if(!token){err.textContent=loginErr||'Вход ещё выполняется, подождите секунду';return}
   reviveBtn.disabled=true;
   try{
     const s=await api('/api/revive/start',{method:'POST'});
