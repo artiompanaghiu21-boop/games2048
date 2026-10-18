@@ -72,7 +72,7 @@ function colorFor(v){
   return 'var('+(m[v]||'--tmax')+')';
 }
 let nextId=1;const els=new Map();
-function geo(){const z=(boardEl.clientWidth-30)/4;return {z,x:c=>10+c*(z+10),y:r=>10+r*(z+10)}}
+function geo(){const z=(boardEl.clientWidth-50)/4; return {z,x:c=>10+c*(z+10),y:r=>10+r*(z+10)}}
 function styleEl(el,v,z){
   el.textContent=v;el.className='tile'+(v>=8?' big':'');
   el.style.background=colorFor(v);el.style.fontSize=v>=1024?'clamp(16px,5.5vw,26px)':'';
