@@ -9,6 +9,11 @@ const COST = 100;                 // цена возрождения в монэ
 const MAX_AGE = 24 * 3600;        // свежесть подписи запуска, с
 
 const sessions = new Map();       // token -> { userId, test, exp }
+// Таблица лидеров: userId -> { name, score }. Хранится в файле рядом с сервером.
+const BOARD_FILE = path.join(__dirname, 'leaderboard.json');
+const board = new Map();
+try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(BOARD_FILE, 'utf8')))) board.set(Number(k), v); } catch {}
+const saveBoard = () => { try { fs.writeFileSync(BOARD_FILE, JSON.stringify(Object.fromEntries(board))); } catch (e) { console.error(e.message); } };
 const intents = new Map();        // intent_id -> { userId, used, busy }  (в продакшене — в БД)
 
 // --- Проверка подписанных параметров запуска hu_* (docs: «Авторизация пользователя») ---
@@ -67,12 +72,31 @@ http.createServer(async (req, res) => {
       const p = verifyLaunch(String(query || ''));
       if (!p) return send(res, 401, { ok: false });
       const token = crypto.randomBytes(24).toString('hex');
-      sessions.set(token, { userId: Number(p.hu_user_id), test: p.hu_mode === 'test', exp: Date.now() + MAX_AGE * 1000 });
+      sessions.set(token, { userId: Number(p.hu_user_id), name: String(p.hu_display_name || p.hu_username || 'Игрок').slice(0, 40), test: p.hu_mode === 'test', exp: Date.now() + MAX_AGE * 1000 });
       return send(res, 200, { ok: true, token });
     }
 
     const s = session(req);
+
+    // Таблица лидеров: топ-10 и место текущего игрока
+    if (req.method === 'GET' && url.pathname === '/api/leaderboard') {
+      const all = [...board.entries()].sort((a, b) => b[1].score - a[1].score);
+      const top = all.slice(0, 10).map(([id, e]) => ({ name: e.name, score: e.score, me: !!s && s.userId === id }));
+      let mine = null;
+      if (s) { const i = all.findIndex(([id]) => id === s.userId); if (i >= 0) mine = { rank: i + 1, score: all[i][1].score }; }
+      return send(res, 200, { ok: true, top, mine });
+    }
+
     if (!s) return send(res, 401, { ok: false });
+
+    // Сохраняем лучший счёт игрока
+    if (req.method === 'POST' && url.pathname === '/api/score') {
+      const { score } = await readJson(req);
+      if (!Number.isInteger(score) || score < 0 || score > 4000000) return send(res, 400, { ok: false });
+      const cur = board.get(s.userId);
+      if (!cur || score > cur.score) { board.set(s.userId, { name: s.name, score }); saveBoard(); }
+      return send(res, 200, { ok: true });
+    }
 
     // 2. Создаём намерение оплаты (POST /payments)
     if (req.method === 'POST' && url.pathname === '/api/revive/start') {
